@@ -480,25 +480,27 @@
       return n;
     }
 
+    const put4 = (o, a, b, c, d) => { frame[o] = a; frame[o + 1] = b; frame[o + 2] = c; frame[o + 3] = d; };
+    const BG = hexToRgb('#efe8db').map(c => Math.pow(c, 2.2));
+    for (const fl of Object.values(FLAVOURS)) fl.strataRgb = fl.strata.map(hexToRgb);
     function writeFrame(time) {
       frame.set(viewProj, 0);
       frame.set(lightVP, 16);
-      const right = [view[0], view[4], view[8]], up = [view[1], view[5], view[9]];
-      frame.set([...right, 0], 32); frame.set([...up, 0], 36);
-      const bg = hexToRgb('#efe8db').map(c => Math.pow(c, 2.2));
-      frame.set([...bg, 1], 40);
-      frame.set([eye[0], eye[1], eye[2], time], 48);
-      frame.set([sun[0], sun[1], sun[2], sim.level], 52);
+      put4(32, view[0], view[4], view[8], 0);
+      put4(36, view[1], view[5], view[9], 0);
+      put4(40, BG[0], BG[1], BG[2], 1);
+      put4(48, eye[0], eye[1], eye[2], time);
+      put4(52, sun[0], sun[1], sun[2], sim.level);
       const ms = reduced ? 0.35 : 1;
-      frame.set([jelly.sx * ms, jelly.sz * ms, jelly.squash * ms, jelly.quiver * ms], 56);
+      put4(56, jelly.sx * ms, jelly.sz * ms, jelly.squash * ms, jelly.quiver * ms);
       frame.set(tilt.q, 60);
-      frame.set([0, tilt.off, 0, 0], 64);
+      put4(64, 0, tilt.off, 0, 0);
       const fl = FLAVOURS[ui.flavour];
-      frame.set([...fl.absorb, 0], 68);
-      frame.set([...fl.scatter, 1.0], 72);
-      fl.strata.forEach((h, i) => frame.set([...hexToRgb(h), 1], 76 + i * 4));
-      frame.set([tgt.w, tgt.h, 1 / tgt.w, 1 / tgt.h], 96);
-      frame.set([N, lampAngle, 0, reduced ? 0.5 : 1], 100);
+      put4(68, fl.absorb[0], fl.absorb[1], fl.absorb[2], 0);
+      put4(72, fl.scatter[0], fl.scatter[1], fl.scatter[2], 1);
+      fl.strataRgb.forEach((c, i) => put4(76 + i * 4, c[0], c[1], c[2], 1));
+      put4(96, tgt.w, tgt.h, 1 / tgt.w, 1 / tgt.h);
+      put4(100, N, lampAngle, 0, reduced ? 0.5 : 1);
     }
 
     function sampleWater(x, z) { return sim.height(x, z); }
@@ -587,7 +589,7 @@
       if (hit.kind === 'buoy') {
         const b = life.buoys[hit.i];
         b.state = 'held'; drag.i = hit.i; drag.hist = [];
-        canvas.style.cursor = 'grabbing';
+        setCursor('grabbing');
       } else if (hit.kind === 'water') {
         drag.p = hit.p;
         sim.splash(hit.p[0], hit.p[2], 0.01, 0.05, 0.25);
@@ -620,10 +622,7 @@
         return;
       }
       if (!drag) {
-        if (e.pointerType === 'mouse') {
-          const hit = pick(e.clientX, e.clientY);
-          canvas.style.cursor = hit.kind === 'water' ? 'crosshair' : hit.kind === 'buoy' ? 'grab' : hit.kind === 'side' ? 'move' : 'default';
-        }
+        if (e.pointerType === 'mouse') { hoverAt = [e.clientX, e.clientY]; }
         return;
       }
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
@@ -631,7 +630,7 @@
       if (drag.kind === 'orbit' || drag.kind === 'land') {
         cam.yaw -= dx * 0.006; camTouched = true;
         cam.pitch = Math.min(1.4, Math.max(0.1, cam.pitch + dy * 0.005));
-        canvas.style.cursor = 'grabbing';
+        setCursor('grabbing');
       } else if (drag.kind === 'water') {
         const p = planePoint(e.clientX, e.clientY, sim.level);
         if (p && Math.abs(p[0]) < K.HALF && Math.abs(p[2]) < K.HALF) {
@@ -672,7 +671,7 @@
       if (drag.kind === 'buoy') releaseBuoy();
       if (drag.kind === 'side') { tilt.held = false; jelly.quiver = Math.min(1, jelly.quiver + 0.6); }
       drag = null;
-      canvas.style.cursor = 'default';
+      setCursor('default');
     };
     canvas.addEventListener('pointerup', endPointer);
     canvas.addEventListener('pointercancel', endPointer);
@@ -773,21 +772,31 @@
     }
 
     let activity = 0;
+    let hoverAt = null;
+    const toneData = new Float32Array(4);
+    const el = { btn: $('#btn-ship'), status: $('#ship-status'), boxes: $('#t-boxes'), voy: $('#t-voy'), fed: $('#t-fed'), meter: $('#meter-fill') };
+    const shown = {};
+    const show = (key, node, value, apply) => { if (shown[key] !== value) { shown[key] = value; apply(node, value); } };
+    const setText = (n, v) => { n.textContent = v; };
+    function setCursor(v) { shown.cursor = v; canvas.style.cursor = v; }
     function updateUI(dt) {
       const b = core.button();
-      const btn = $('#btn-ship');
-      if (btn.textContent !== b.label) btn.textContent = b.label;
-      btn.disabled = !b.enabled;
+      show('label', el.btn, b.label, setText);
+      show('enabled', el.btn, b.enabled, (n, v) => { n.disabled = !v; });
       const st = core.status();
-      const stEl = $('#ship-status');
-      if (stEl.textContent !== st) stEl.textContent = st;
-      $('#t-boxes').textContent = core.S.tally.boxes;
-      $('#t-voy').textContent = core.S.tally.voyages;
-      $('#t-fed').textContent = ui.fed;
+      show('status', el.status, st, setText);
+      show('boxes', el.boxes, core.S.tally.boxes, setText);
+      show('voy', el.voy, core.S.tally.voyages, setText);
+      show('fed', el.fed, ui.fed, setText);
       const motion = core.ship.speed * 2 + core.tug.speed + core.cranes.reduce((a, c) => a + Math.abs(c.vx) + Math.abs(c.vz) * 0.3 + Math.abs(c.vy) * 0.3, 0);
       const target = Math.min(1, Math.sqrt(sim.energy) * 1.6 + motion * 0.5 + jelly.quiver * 0.4);
       activity += (target - activity) * Math.min(1, dt * 3);
-      $('#meter-fill').style.transform = `scaleX(${activity.toFixed(3)})`;
+      show('meter', el.meter, Math.round(activity * 100), (n, v) => { n.style.transform = `scaleX(${v / 100})`; });
+      if (hoverAt && !drag) {
+        const hit = pick(hoverAt[0], hoverAt[1]);
+        show('cursor', canvas, hit.kind === 'water' ? 'crosshair' : hit.kind === 'buoy' ? 'grab' : hit.kind === 'side' ? 'move' : 'default', (n, v) => { n.style.cursor = v; });
+        hoverAt = null;
+      }
       hook.status = st;
       hook.button = b;
     }
@@ -836,7 +845,8 @@
       device.queue.writeBuffer(gullIB, 0, instG, 0, nG * 12);
       device.queue.writeBuffer(jellyIB, 0, instJ, 0, nJ * 12);
       if (nP) device.queue.writeBuffer(partIB, 0, instP, 0, nP * 12);
-      device.queue.writeBuffer(toneBuf, 0, new Float32Array([tgt.w, tgt.h, (now % 997), 0]));
+      toneData[0] = tgt.w; toneData[1] = tgt.h; toneData[2] = now % 997;
+      device.queue.writeBuffer(toneBuf, 0, toneData);
 
       const enc = device.createCommandEncoder();
       {

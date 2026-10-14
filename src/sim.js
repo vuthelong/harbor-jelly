@@ -8,15 +8,15 @@
       this.N = N;
       this.dx = (2 * K.HALF) / N;
       const C = N * N;
-      this.eta = new Float32Array(C);
-      this.u = new Float32Array((N + 1) * N);
-      this.v = new Float32Array(N * (N + 1));
+      this.eta = new Float64Array(C);
+      this.u = new Float64Array((N + 1) * N);
+      this.v = new Float64Array(N * (N + 1));
       this.ground = new Float32Array(C);
       this.depth = new Float32Array(C);
       this.wet = new Uint8Array(C);
       this.foam = new Float32Array(C);
       this.foam2 = new Float32Array(C);
-      this.lap = new Float32Array(C);
+      this.lap = new Float64Array(C);
       this.hull = new Float32Array(C);
       this.hullNew = new Float32Array(C);
       this.tex = new Float32Array(C * 4);
@@ -31,88 +31,97 @@
     cx(i) { return -K.HALF + (i + 0.5) * this.dx; }
     setLevel(level) {
       this.level = level;
-      const N = this.N;
+      const N = this.N, dep = this.depth, wet = this.wet;
       for (let c = 0; c < N * N; c++) {
         const d = level - this.ground[c];
-        this.wet[c] = d > 0.015 ? 1 : 0;
-        this.depth[c] = this.wet[c] ? Math.min(0.6, d) : 0;
-        if (!this.wet[c]) this.eta[c] = 0;
+        wet[c] = d > 0.015 ? 1 : 0;
+        dep[c] = wet[c] ? Math.min(0.6, d) : 0;
+        if (!wet[c]) { this.eta[c] = 0; this.foam[c] = 0; }
       }
+      const hu = this.hu || (this.hu = new Float64Array((N + 1) * N)), mu = this.mu || (this.mu = new Float64Array((N + 1) * N));
+      const hv = this.hv || (this.hv = new Float64Array(N * (N + 1))), mv = this.mv || (this.mv = new Float64Array(N * (N + 1)));
+      hu.fill(0); mu.fill(0); hv.fill(0); mv.fill(0);
+      for (let j = 0; j < N; j++) for (let i = 1; i < N; i++) {
+        const c = j * N + i;
+        if (wet[c - 1] && wet[c]) { const f = j * (N + 1) + i; hu[f] = Math.min(dep[c - 1], dep[c]); mu[f] = 1; }
+      }
+      for (let j = 1; j < N; j++) for (let i = 0; i < N; i++) {
+        const c = j * N + i;
+        if (wet[c - N] && wet[c]) { hv[c] = Math.min(dep[c - N], dep[c]); mv[c] = 1; }
+      }
+      this.pres = this.pres || new Float64Array(N * N);
+      this.tex.fill(0);
+
+      let j0 = N, j1 = -1;
+      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) if (wet[j * N + i]) { if (j < j0) j0 = j; if (j > j1) j1 = j; break; }
+      this.j0 = j0; this.j1 = j1;
     }
     reset() {
       this.eta.fill(0); this.u.fill(0); this.v.fill(0); this.foam.fill(0); this.hull.fill(0); this.primed = false;
     }
     step(dt, p) {
-      const N = this.N, dx = this.dx, eta = this.eta, u = this.u, v = this.v, wet = this.wet, dep = this.depth, lap = this.lap;
-      const g = p.g, sig = p.sigma / (dx * dx), damp = Math.exp(-dt * p.damp);
-      const ax = p.ax, az = p.az;
-      for (let j = 0; j < N; j++) {
+      const N = this.N, N1 = N + 1, dx = this.dx, eta = this.eta, u = this.u, v = this.v, lap = this.lap, P = this.pres;
+      const hu = this.hu, mu = this.mu, hv = this.hv, mv = this.mv;
+      const g = p.g, sig = p.sigma / (dx * dx), damp = Math.exp(-dt * p.damp), sm = p.smooth;
+      const kx = dt / dx, ax = dt * p.ax, az = dt * p.az;
+      const j0 = this.j0, j1 = this.j1;
+      for (let j = j0; j <= j1; j++) {
+        const row = j * N, frow = j * N1;
+        const edgeRow = j === 0 || j === N - 1;
         for (let i = 0; i < N; i++) {
-          const c = j * N + i;
-          if (!wet[c]) { lap[c] = 0; continue; }
-          const e = eta[c];
-          const l = i > 0 && wet[c - 1] ? eta[c - 1] : e;
-          const r = i < N - 1 && wet[c + 1] ? eta[c + 1] : e;
-          const d = j > 0 && wet[c - N] ? eta[c - N] : e;
-          const t = j < N - 1 && wet[c + N] ? eta[c + N] : e;
-          lap[c] = l + r + d + t - 4 * e;
+          const c = row + i, e = eta[c];
+          let l;
+          if (edgeRow || i === 0 || i === N - 1) {
+            l = 0;
+            if (i > 0) l += mu[frow + i] * (eta[c - 1] - e);
+            if (i < N - 1) l += mu[frow + i + 1] * (eta[c + 1] - e);
+            if (j > 0) l += mv[c] * (eta[c - N] - e);
+            if (j < N - 1) l += mv[c + N] * (eta[c + N] - e);
+          } else {
+            l = mu[frow + i] * (eta[c - 1] - e) + mu[frow + i + 1] * (eta[c + 1] - e) + mv[c] * (eta[c - N] - e) + mv[c + N] * (eta[c + N] - e);
+          }
+          lap[c] = l;
+          P[c] = g * e - sig * l;
         }
       }
-      const kx = dt / dx;
-      for (let j = 0; j < N; j++) {
-        const row = j * (N + 1), cr = j * N;
+      for (let j = j0; j <= j1; j++) {
+        const row = j * N1, cr = j * N;
         for (let i = 1; i < N; i++) {
-          const cL = cr + i - 1, cR = cr + i;
           const f = row + i;
-          if (wet[cL] && wet[cR]) {
-            const pL = g * eta[cL] - sig * lap[cL], pR = g * eta[cR] - sig * lap[cR];
-            u[f] = (u[f] - kx * (pR - pL) + dt * ax) * damp;
-          } else u[f] = 0;
+          u[f] = mu[f] * (u[f] - kx * (P[cr + i] - P[cr + i - 1]) + ax) * damp;
         }
       }
-      for (let j = 1; j < N; j++) {
-        for (let i = 0; i < N; i++) {
-          const cD = (j - 1) * N + i, cU = j * N + i;
-          const f = j * N + i;
-          if (wet[cD] && wet[cU]) {
-            const pD = g * eta[cD] - sig * lap[cD], pU = g * eta[cU] - sig * lap[cU];
-            v[f] = (v[f] - kx * (pU - pD) + dt * az) * damp;
-          } else v[f] = 0;
-        }
-      }
+      for (let c = Math.max(N, j0 * N), ce = Math.min(N * N, (j1 + 1) * N); c < ce; c++) v[c] = mv[c] * (v[c] - kx * (P[c] - P[c - N]) + az) * damp;
       let en = 0;
-      for (let j = 0; j < N; j++) {
+      for (let j = j0; j <= j1; j++) {
+        const row = j * N, frow = j * N1;
         for (let i = 0; i < N; i++) {
-          const c = j * N + i;
-          if (!wet[c]) continue;
-          const hc = dep[c];
-          const hl = i > 0 ? Math.min(hc, dep[c - 1]) : 0, hr = i < N - 1 ? Math.min(hc, dep[c + 1]) : 0;
-          const hd = j > 0 ? Math.min(hc, dep[c - N]) : 0, hu = j < N - 1 ? Math.min(hc, dep[c + N]) : 0;
-          const fl = u[j * (N + 1) + i] * hl, fr = u[j * (N + 1) + i + 1] * hr;
-          const fd = v[j * N + i] * hd, fu = v[(j + 1) * N + i] * hu;
-          eta[c] -= kx * (fr - fl + fu - fd);
-          eta[c] += lap[c] * p.smooth;
-          en += eta[c] * eta[c];
+          const c = row + i, f = frow + i;
+          const e = eta[c] - kx * (hu[f + 1] * u[f + 1] - hu[f] * u[f] + hv[c + N] * v[c + N] - hv[c] * v[c]) + lap[c] * sm;
+          eta[c] = e;
+          en += e * e;
         }
       }
       this.energy = en;
     }
     velAt(i, j) {
-      const N = this.N;
-      const u = 0.5 * (this.u[j * (N + 1) + i] + this.u[j * (N + 1) + i + 1]);
-      const v = 0.5 * (this.v[j * N + i] + this.v[(j + 1) * N + i]);
-      return [u, v];
+      const N = this.N, o = this._vel || (this._vel = [0, 0]);
+      o[0] = 0.5 * (this.u[j * (N + 1) + i] + this.u[j * (N + 1) + i + 1]);
+      o[1] = 0.5 * (this.v[j * N + i] + this.v[(j + 1) * N + i]);
+      return o;
     }
     advectFoam(dt) {
-      const N = this.N, f = this.foam, f2 = this.foam2;
-      const decay = Math.exp(-dt * 0.45);
-      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-        const c = j * N + i;
-        if (!this.wet[c]) { f2[c] = 0; continue; }
-        const vu = 0.5 * (this.u[j * (N + 1) + i] + this.u[j * (N + 1) + i + 1]);
-        const vv = 0.5 * (this.v[j * N + i] + this.v[(j + 1) * N + i]);
-        const si = i - vu * dt / this.dx * 1.6, sj = j - vv * dt / this.dx * 1.6;
-        f2[c] = this.bilin(f, si, sj) * decay;
+      const N = this.N, f = this.foam, f2 = this.foam2, wet = this.wet, U = this.u, V = this.v;
+      const decay = Math.exp(-dt * 0.45), k = dt / this.dx * 0.8, EPS = 1e-4;
+      for (let j = this.j0; j <= this.j1; j++) {
+        const row = j * N;
+        for (let i = 0; i < N; i++) {
+          const c = row + i;
+          if (!wet[c]) { f2[c] = 0; continue; }
+          if (f[c] < EPS && (i === 0 || f[c - 1] < EPS) && (i === N - 1 || f[c + 1] < EPS) && (j === 0 || f[c - N] < EPS) && (j === N - 1 || f[c + N] < EPS)) { f2[c] = 0; continue; }
+          const fu = j * (N + 1) + i;
+          f2[c] = this.bilin(f, i - (U[fu] + U[fu + 1]) * k, j - (V[c] + V[c + N]) * k) * decay;
+        }
       }
       this.foam = f2; this.foam2 = f;
     }
@@ -213,14 +222,14 @@
       }
       const h = this.hull;
       if (!this.primed) { h.set(hn); this.primed = true; return; }
-      for (let cc = 0; cc < N * N; cc++) {
+      for (let cc = this.j0 * N, ce = (this.j1 + 1) * N; cc < ce; cc++) {
         const d = hn[cc] - h[cc];
         if (d !== 0) { this.eta[cc] -= d; h[cc] = hn[cc]; }
       }
     }
     whitecaps(dt) {
       const N = this.N, e = this.eta, f = this.foam;
-      for (let j = 1; j < N - 1; j++) for (let i = 1; i < N - 1; i++) {
+      for (let j = Math.max(1, this.j0), je = Math.min(N - 1, this.j1 + 1); j < je; j++) for (let i = 1; i < N - 1; i++) {
         const c = j * N + i;
         if (!this.wet[c]) continue;
         const gx = e[c + 1] - e[c - 1], gz = e[c + N] - e[c - N];
@@ -230,12 +239,13 @@
       }
     }
     pack() {
-      const N = this.N, t = this.tex;
-      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-        const c = j * N + i;
-        const vu = 0.5 * (this.u[j * (N + 1) + i] + this.u[j * (N + 1) + i + 1]);
-        const vv = 0.5 * (this.v[j * N + i] + this.v[(j + 1) * N + i]);
-        t[c * 4] = this.eta[c]; t[c * 4 + 1] = this.foam[c]; t[c * 4 + 2] = vu; t[c * 4 + 3] = vv;
+      const N = this.N, t = this.tex, U = this.u, V = this.v, E = this.eta, Fo = this.foam;
+      for (let j = this.j0; j <= this.j1; j++) {
+        const row = j * N, frow = j * (N + 1);
+        for (let i = 0; i < N; i++) {
+          const c = row + i, o = c * 4;
+          t[o] = E[c]; t[o + 1] = Fo[c]; t[o + 2] = 0.5 * (U[frow + i] + U[frow + i + 1]); t[o + 3] = 0.5 * (V[c] + V[c + N]);
+        }
       }
       return t;
     }

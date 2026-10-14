@@ -1,7 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -18,11 +17,9 @@ function loadCore() {
   } else {
     code = readFileSync(join(here, '..', 'src', 'core.js'), 'utf8');
   }
-  const ctx = { Math, console };
-  ctx.globalThis = ctx;
-  vm.createContext(ctx);
-  vm.runInContext(code, ctx);
-  return ctx.HarborCore;
+  const root = {};
+  new Function('window', code)(root);
+  return root.HarborCore;
 }
 
 const HC = loadCore();

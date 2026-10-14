@@ -2134,15 +2134,15 @@ body.no-gpu .panel, body.no-gpu .howto { display: none; }
       this.N = N;
       this.dx = (2 * K.HALF) / N;
       const C = N * N;
-      this.eta = new Float32Array(C);
-      this.u = new Float32Array((N + 1) * N);
-      this.v = new Float32Array(N * (N + 1));
+      this.eta = new Float64Array(C);
+      this.u = new Float64Array((N + 1) * N);
+      this.v = new Float64Array(N * (N + 1));
       this.ground = new Float32Array(C);
       this.depth = new Float32Array(C);
       this.wet = new Uint8Array(C);
       this.foam = new Float32Array(C);
       this.foam2 = new Float32Array(C);
-      this.lap = new Float32Array(C);
+      this.lap = new Float64Array(C);
       this.hull = new Float32Array(C);
       this.hullNew = new Float32Array(C);
       this.tex = new Float32Array(C * 4);
@@ -2157,88 +2157,97 @@ body.no-gpu .panel, body.no-gpu .howto { display: none; }
     cx(i) { return -K.HALF + (i + 0.5) * this.dx; }
     setLevel(level) {
       this.level = level;
-      const N = this.N;
+      const N = this.N, dep = this.depth, wet = this.wet;
       for (let c = 0; c < N * N; c++) {
         const d = level - this.ground[c];
-        this.wet[c] = d > 0.015 ? 1 : 0;
-        this.depth[c] = this.wet[c] ? Math.min(0.6, d) : 0;
-        if (!this.wet[c]) this.eta[c] = 0;
+        wet[c] = d > 0.015 ? 1 : 0;
+        dep[c] = wet[c] ? Math.min(0.6, d) : 0;
+        if (!wet[c]) { this.eta[c] = 0; this.foam[c] = 0; }
       }
+      const hu = this.hu || (this.hu = new Float64Array((N + 1) * N)), mu = this.mu || (this.mu = new Float64Array((N + 1) * N));
+      const hv = this.hv || (this.hv = new Float64Array(N * (N + 1))), mv = this.mv || (this.mv = new Float64Array(N * (N + 1)));
+      hu.fill(0); mu.fill(0); hv.fill(0); mv.fill(0);
+      for (let j = 0; j < N; j++) for (let i = 1; i < N; i++) {
+        const c = j * N + i;
+        if (wet[c - 1] && wet[c]) { const f = j * (N + 1) + i; hu[f] = Math.min(dep[c - 1], dep[c]); mu[f] = 1; }
+      }
+      for (let j = 1; j < N; j++) for (let i = 0; i < N; i++) {
+        const c = j * N + i;
+        if (wet[c - N] && wet[c]) { hv[c] = Math.min(dep[c - N], dep[c]); mv[c] = 1; }
+      }
+      this.pres = this.pres || new Float64Array(N * N);
+      this.tex.fill(0);
+
+      let j0 = N, j1 = -1;
+      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) if (wet[j * N + i]) { if (j < j0) j0 = j; if (j > j1) j1 = j; break; }
+      this.j0 = j0; this.j1 = j1;
     }
     reset() {
       this.eta.fill(0); this.u.fill(0); this.v.fill(0); this.foam.fill(0); this.hull.fill(0); this.primed = false;
     }
     step(dt, p) {
-      const N = this.N, dx = this.dx, eta = this.eta, u = this.u, v = this.v, wet = this.wet, dep = this.depth, lap = this.lap;
-      const g = p.g, sig = p.sigma / (dx * dx), damp = Math.exp(-dt * p.damp);
-      const ax = p.ax, az = p.az;
-      for (let j = 0; j < N; j++) {
+      const N = this.N, N1 = N + 1, dx = this.dx, eta = this.eta, u = this.u, v = this.v, lap = this.lap, P = this.pres;
+      const hu = this.hu, mu = this.mu, hv = this.hv, mv = this.mv;
+      const g = p.g, sig = p.sigma / (dx * dx), damp = Math.exp(-dt * p.damp), sm = p.smooth;
+      const kx = dt / dx, ax = dt * p.ax, az = dt * p.az;
+      const j0 = this.j0, j1 = this.j1;
+      for (let j = j0; j <= j1; j++) {
+        const row = j * N, frow = j * N1;
+        const edgeRow = j === 0 || j === N - 1;
         for (let i = 0; i < N; i++) {
-          const c = j * N + i;
-          if (!wet[c]) { lap[c] = 0; continue; }
-          const e = eta[c];
-          const l = i > 0 && wet[c - 1] ? eta[c - 1] : e;
-          const r = i < N - 1 && wet[c + 1] ? eta[c + 1] : e;
-          const d = j > 0 && wet[c - N] ? eta[c - N] : e;
-          const t = j < N - 1 && wet[c + N] ? eta[c + N] : e;
-          lap[c] = l + r + d + t - 4 * e;
+          const c = row + i, e = eta[c];
+          let l;
+          if (edgeRow || i === 0 || i === N - 1) {
+            l = 0;
+            if (i > 0) l += mu[frow + i] * (eta[c - 1] - e);
+            if (i < N - 1) l += mu[frow + i + 1] * (eta[c + 1] - e);
+            if (j > 0) l += mv[c] * (eta[c - N] - e);
+            if (j < N - 1) l += mv[c + N] * (eta[c + N] - e);
+          } else {
+            l = mu[frow + i] * (eta[c - 1] - e) + mu[frow + i + 1] * (eta[c + 1] - e) + mv[c] * (eta[c - N] - e) + mv[c + N] * (eta[c + N] - e);
+          }
+          lap[c] = l;
+          P[c] = g * e - sig * l;
         }
       }
-      const kx = dt / dx;
-      for (let j = 0; j < N; j++) {
-        const row = j * (N + 1), cr = j * N;
+      for (let j = j0; j <= j1; j++) {
+        const row = j * N1, cr = j * N;
         for (let i = 1; i < N; i++) {
-          const cL = cr + i - 1, cR = cr + i;
           const f = row + i;
-          if (wet[cL] && wet[cR]) {
-            const pL = g * eta[cL] - sig * lap[cL], pR = g * eta[cR] - sig * lap[cR];
-            u[f] = (u[f] - kx * (pR - pL) + dt * ax) * damp;
-          } else u[f] = 0;
+          u[f] = mu[f] * (u[f] - kx * (P[cr + i] - P[cr + i - 1]) + ax) * damp;
         }
       }
-      for (let j = 1; j < N; j++) {
-        for (let i = 0; i < N; i++) {
-          const cD = (j - 1) * N + i, cU = j * N + i;
-          const f = j * N + i;
-          if (wet[cD] && wet[cU]) {
-            const pD = g * eta[cD] - sig * lap[cD], pU = g * eta[cU] - sig * lap[cU];
-            v[f] = (v[f] - kx * (pU - pD) + dt * az) * damp;
-          } else v[f] = 0;
-        }
-      }
+      for (let c = Math.max(N, j0 * N), ce = Math.min(N * N, (j1 + 1) * N); c < ce; c++) v[c] = mv[c] * (v[c] - kx * (P[c] - P[c - N]) + az) * damp;
       let en = 0;
-      for (let j = 0; j < N; j++) {
+      for (let j = j0; j <= j1; j++) {
+        const row = j * N, frow = j * N1;
         for (let i = 0; i < N; i++) {
-          const c = j * N + i;
-          if (!wet[c]) continue;
-          const hc = dep[c];
-          const hl = i > 0 ? Math.min(hc, dep[c - 1]) : 0, hr = i < N - 1 ? Math.min(hc, dep[c + 1]) : 0;
-          const hd = j > 0 ? Math.min(hc, dep[c - N]) : 0, hu = j < N - 1 ? Math.min(hc, dep[c + N]) : 0;
-          const fl = u[j * (N + 1) + i] * hl, fr = u[j * (N + 1) + i + 1] * hr;
-          const fd = v[j * N + i] * hd, fu = v[(j + 1) * N + i] * hu;
-          eta[c] -= kx * (fr - fl + fu - fd);
-          eta[c] += lap[c] * p.smooth;
-          en += eta[c] * eta[c];
+          const c = row + i, f = frow + i;
+          const e = eta[c] - kx * (hu[f + 1] * u[f + 1] - hu[f] * u[f] + hv[c + N] * v[c + N] - hv[c] * v[c]) + lap[c] * sm;
+          eta[c] = e;
+          en += e * e;
         }
       }
       this.energy = en;
     }
     velAt(i, j) {
-      const N = this.N;
-      const u = 0.5 * (this.u[j * (N + 1) + i] + this.u[j * (N + 1) + i + 1]);
-      const v = 0.5 * (this.v[j * N + i] + this.v[(j + 1) * N + i]);
-      return [u, v];
+      const N = this.N, o = this._vel || (this._vel = [0, 0]);
+      o[0] = 0.5 * (this.u[j * (N + 1) + i] + this.u[j * (N + 1) + i + 1]);
+      o[1] = 0.5 * (this.v[j * N + i] + this.v[(j + 1) * N + i]);
+      return o;
     }
     advectFoam(dt) {
-      const N = this.N, f = this.foam, f2 = this.foam2;
-      const decay = Math.exp(-dt * 0.45);
-      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-        const c = j * N + i;
-        if (!this.wet[c]) { f2[c] = 0; continue; }
-        const vu = 0.5 * (this.u[j * (N + 1) + i] + this.u[j * (N + 1) + i + 1]);
-        const vv = 0.5 * (this.v[j * N + i] + this.v[(j + 1) * N + i]);
-        const si = i - vu * dt / this.dx * 1.6, sj = j - vv * dt / this.dx * 1.6;
-        f2[c] = this.bilin(f, si, sj) * decay;
+      const N = this.N, f = this.foam, f2 = this.foam2, wet = this.wet, U = this.u, V = this.v;
+      const decay = Math.exp(-dt * 0.45), k = dt / this.dx * 0.8, EPS = 1e-4;
+      for (let j = this.j0; j <= this.j1; j++) {
+        const row = j * N;
+        for (let i = 0; i < N; i++) {
+          const c = row + i;
+          if (!wet[c]) { f2[c] = 0; continue; }
+          if (f[c] < EPS && (i === 0 || f[c - 1] < EPS) && (i === N - 1 || f[c + 1] < EPS) && (j === 0 || f[c - N] < EPS) && (j === N - 1 || f[c + N] < EPS)) { f2[c] = 0; continue; }
+          const fu = j * (N + 1) + i;
+          f2[c] = this.bilin(f, i - (U[fu] + U[fu + 1]) * k, j - (V[c] + V[c + N]) * k) * decay;
+        }
       }
       this.foam = f2; this.foam2 = f;
     }
@@ -2339,14 +2348,14 @@ body.no-gpu .panel, body.no-gpu .howto { display: none; }
       }
       const h = this.hull;
       if (!this.primed) { h.set(hn); this.primed = true; return; }
-      for (let cc = 0; cc < N * N; cc++) {
+      for (let cc = this.j0 * N, ce = (this.j1 + 1) * N; cc < ce; cc++) {
         const d = hn[cc] - h[cc];
         if (d !== 0) { this.eta[cc] -= d; h[cc] = hn[cc]; }
       }
     }
     whitecaps(dt) {
       const N = this.N, e = this.eta, f = this.foam;
-      for (let j = 1; j < N - 1; j++) for (let i = 1; i < N - 1; i++) {
+      for (let j = Math.max(1, this.j0), je = Math.min(N - 1, this.j1 + 1); j < je; j++) for (let i = 1; i < N - 1; i++) {
         const c = j * N + i;
         if (!this.wet[c]) continue;
         const gx = e[c + 1] - e[c - 1], gz = e[c + N] - e[c - N];
@@ -2356,12 +2365,13 @@ body.no-gpu .panel, body.no-gpu .howto { display: none; }
       }
     }
     pack() {
-      const N = this.N, t = this.tex;
-      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-        const c = j * N + i;
-        const vu = 0.5 * (this.u[j * (N + 1) + i] + this.u[j * (N + 1) + i + 1]);
-        const vv = 0.5 * (this.v[j * N + i] + this.v[(j + 1) * N + i]);
-        t[c * 4] = this.eta[c]; t[c * 4 + 1] = this.foam[c]; t[c * 4 + 2] = vu; t[c * 4 + 3] = vv;
+      const N = this.N, t = this.tex, U = this.u, V = this.v, E = this.eta, Fo = this.foam;
+      for (let j = this.j0; j <= this.j1; j++) {
+        const row = j * N, frow = j * (N + 1);
+        for (let i = 0; i < N; i++) {
+          const c = row + i, o = c * 4;
+          t[o] = E[c]; t[o + 1] = Fo[c]; t[o + 2] = 0.5 * (U[frow + i] + U[frow + i + 1]); t[o + 3] = 0.5 * (V[c] + V[c + N]);
+        }
       }
       return t;
     }
@@ -3138,6 +3148,20 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
   const K = HC.K, L = HC.LAYOUT;
   const { qmul, qaxis, qyaw, qrot, clamp, wrapAngle, mulberry32 } = HC;
 
+  const TR = 384, TS = TR / (2 * K.HALF);
+  let TT = null;
+  function terr(x, z) {
+    if (!TT) {
+      TT = new Float32Array(TR * TR);
+      for (let j = 0; j < TR; j++) for (let i = 0; i < TR; i++) TT[j * TR + i] = HC.terrainH(-K.HALF + (i + 0.5) / TS, -K.HALF + (j + 0.5) / TS);
+    }
+    let gi = (x + K.HALF) * TS - 0.5, gj = (z + K.HALF) * TS - 0.5;
+    gi = gi < 0 ? 0 : gi > TR - 1.001 ? TR - 1.001 : gi;
+    gj = gj < 0 ? 0 : gj > TR - 1.001 ? TR - 1.001 : gj;
+    const i = gi | 0, j = gj | 0, fi = gi - i, fj = gj - j, c = j * TR + i;
+    return (TT[c] * (1 - fi) + TT[c + 1] * fi) * (1 - fj) + (TT[c + TR] * (1 - fi) + TT[c + TR + 1] * fi) * fj;
+  }
+
   class Floater {
     constructor(x, z, psi, half, beam) {
       this.x = x; this.z = z; this.psi = psi; this.half = half; this.beam = beam;
@@ -3355,7 +3379,7 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
           if (f.life > 2.5 + (i % 5) * 0.4) f.state = 'sink';
         } else {
           f.y -= dt * 0.035;
-          const H = HC.terrainH(f.x, f.z);
+          const H = terr(f.x, f.z);
           if (f.y < H + 0.005) f.y = H + 0.005;
         }
         if (f.life > 30) food.splice(i, 1);
@@ -3382,7 +3406,7 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
 
     function inWater(x, y, z) {
       if (Math.abs(x) > K.HALF - 0.04 || Math.abs(z) > K.HALF - 0.04) return false;
-      return y < sim.level - 0.03 && y > HC.terrainH(x, z) + 0.025;
+      return y < sim.level - 0.03 && y > terr(x, z) + 0.025;
     }
 
     function updateFish(dt, core) {
@@ -3397,7 +3421,7 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
           for (let tries = 0; tries < 20; tries++) {
             const x = sc.home[0] + (rnd() - 0.5) * 2.2, z = sc.home[1] + (rnd() - 0.5) * 2.0;
             const y = sc.sp.depth[0] + rnd() * (sc.sp.depth[1] - sc.sp.depth[0]);
-            if (inWater(x, y, z) && HC.terrainH(x, z) < y - 0.08) { sc.target = [x, y, z]; break; }
+            if (inWater(x, y, z) && terr(x, z) < y - 0.08) { sc.target = [x, y, z]; break; }
           }
         }
         const ms = sc.members;
@@ -3449,20 +3473,21 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
               ax += -nlz * s * 1.5; az += nlz * c * 1.5;
             }
           }
-          const H = HC.terrainH(f.p[0], f.p[2]);
+          const H = terr(f.p[0], f.p[2]);
           if (f.p[1] < H + 0.06) ay += (H + 0.06 - f.p[1]) * 40;
           if (f.p[1] > sim.level - 0.06) ay -= (f.p[1] - sim.level + 0.06) * 40;
-          for (const [ex, ez] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            const dd = K.HALF - (f.p[0] * ex + f.p[2] * ez);
-            if (dd < 0.15) { ax -= ex * (0.15 - dd) * 30; az -= ez * (0.15 - dd) * 30; }
-          }
-          const ahead = [f.p[0] + f.v[0] * 0.5, f.p[2] + f.v[2] * 0.5];
-          if (HC.terrainH(ahead[0], ahead[1]) > f.p[1] - 0.04 || ahead[1] < K.QUAY_Z + 0.06) {
+          const wl = 0.15 - (K.HALF - f.p[0]), wr = 0.15 - (K.HALF + f.p[0]), wn = 0.15 - (K.HALF - f.p[2]), ws = 0.15 - (K.HALF + f.p[2]);
+          if (wl > 0) ax -= wl * 30;
+          if (wr > 0) ax += wr * 30;
+          if (wn > 0) az -= wn * 30;
+          if (ws > 0) az += ws * 30;
+          const aheadX = f.p[0] + f.v[0] * 0.5, aheadZ = f.p[2] + f.v[2] * 0.5;
+          if (terr(aheadX, aheadZ) > f.p[1] - 0.04 || aheadZ < K.QUAY_Z + 0.06) {
             const e = 0.03;
-            const gx = HC.terrainH(f.p[0] + e, f.p[2]) - HC.terrainH(f.p[0] - e, f.p[2]);
-            const gz = HC.terrainH(f.p[0], f.p[2] + e) - HC.terrainH(f.p[0], f.p[2] - e);
+            const gx = terr(f.p[0] + e, f.p[2]) - terr(f.p[0] - e, f.p[2]);
+            const gz = terr(f.p[0], f.p[2] + e) - terr(f.p[0], f.p[2] - e);
             ax -= gx * 30 + f.v[0] * 2; az -= gz * 30 + f.v[2] * 2;
-            if (ahead[1] < K.QUAY_Z + 0.06) az += 2;
+            if (aheadZ < K.QUAY_Z + 0.06) az += 2;
           }
           f.v[0] += ax * dt; f.v[1] += ay * dt; f.v[2] += az * dt;
           const sp2 = Math.hypot(f.v[0], f.v[1], f.v[2]);
@@ -3471,7 +3496,7 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
           const k = sp2 > vmax ? vmax / sp2 : (sp2 < vmin ? vmin / (sp2 + 1e-6) : 1);
           f.v[0] *= k; f.v[1] *= k * 0.6; f.v[2] *= k;
           f.p[0] += f.v[0] * dt; f.p[1] += f.v[1] * dt; f.p[2] += f.v[2] * dt;
-          const Hn = HC.terrainH(f.p[0], f.p[2]);
+          const Hn = terr(f.p[0], f.p[2]);
           if (Hn > sim.level - 0.06 || f.p[2] < K.QUAY_Z + 0.03) { f.p[0] -= f.v[0] * dt * 2; f.p[2] -= f.v[2] * dt * 2; f.v[0] *= -0.5; f.v[2] *= -0.5; }
           f.p[1] = clamp(f.p[1], Math.max(Hn, -0.6) + 0.025, sim.level - 0.035);
           f.p[0] = clamp(f.p[0], -K.HALF + 0.04, K.HALF - 0.04); f.p[2] = clamp(f.p[2], -K.HALF + 0.04, K.HALF - 0.04);
@@ -3491,7 +3516,7 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
     const jellies = [];
     for (let i = 0; i < 6; i++) {
       let x, z;
-      do { x = -2.2 + rnd() * 4.2; z = -0.3 + rnd() * 2.6; } while (HC.terrainH(x, z) > -0.4);
+      do { x = -2.2 + rnd() * 4.2; z = -0.3 + rnd() * 2.6; } while (terr(x, z) > -0.4);
       jellies.push({ p: [x, -0.15 - rnd() * 0.25, z], ph: rnd() * 6, rate: 1.8 + rnd() * 0.8, vy: 0, yaw: rnd() * 6, tilt: 0, size: 0.045 + rnd() * 0.02, seed: rnd() * 10 });
     }
     function updateJellies(dt, core) {
@@ -3503,7 +3528,7 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
         j.p[0] += (vu * 0.6 + Math.sin(Life.t * 0.07 + j.seed) * 0.01) * dt;
         j.p[2] += (vv * 0.6 + Math.cos(Life.t * 0.05 + j.seed) * 0.01) * dt;
         j.p[1] += j.vy * dt;
-        const H = HC.terrainH(j.p[0], j.p[2]);
+        const H = terr(j.p[0], j.p[2]);
         const bottom = H + 0.12;
         if (j.p[1] < bottom) { j.p[1] = bottom; j.vy = Math.abs(j.vy); }
         if (j.p[1] > sim.level - 0.06) { j.p[1] = sim.level - 0.06; j.vy = -Math.abs(j.vy) * 0.5; }
@@ -4231,25 +4256,27 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
       return n;
     }
 
+    const put4 = (o, a, b, c, d) => { frame[o] = a; frame[o + 1] = b; frame[o + 2] = c; frame[o + 3] = d; };
+    const BG = hexToRgb('#efe8db').map(c => Math.pow(c, 2.2));
+    for (const fl of Object.values(FLAVOURS)) fl.strataRgb = fl.strata.map(hexToRgb);
     function writeFrame(time) {
       frame.set(viewProj, 0);
       frame.set(lightVP, 16);
-      const right = [view[0], view[4], view[8]], up = [view[1], view[5], view[9]];
-      frame.set([...right, 0], 32); frame.set([...up, 0], 36);
-      const bg = hexToRgb('#efe8db').map(c => Math.pow(c, 2.2));
-      frame.set([...bg, 1], 40);
-      frame.set([eye[0], eye[1], eye[2], time], 48);
-      frame.set([sun[0], sun[1], sun[2], sim.level], 52);
+      put4(32, view[0], view[4], view[8], 0);
+      put4(36, view[1], view[5], view[9], 0);
+      put4(40, BG[0], BG[1], BG[2], 1);
+      put4(48, eye[0], eye[1], eye[2], time);
+      put4(52, sun[0], sun[1], sun[2], sim.level);
       const ms = reduced ? 0.35 : 1;
-      frame.set([jelly.sx * ms, jelly.sz * ms, jelly.squash * ms, jelly.quiver * ms], 56);
+      put4(56, jelly.sx * ms, jelly.sz * ms, jelly.squash * ms, jelly.quiver * ms);
       frame.set(tilt.q, 60);
-      frame.set([0, tilt.off, 0, 0], 64);
+      put4(64, 0, tilt.off, 0, 0);
       const fl = FLAVOURS[ui.flavour];
-      frame.set([...fl.absorb, 0], 68);
-      frame.set([...fl.scatter, 1.0], 72);
-      fl.strata.forEach((h, i) => frame.set([...hexToRgb(h), 1], 76 + i * 4));
-      frame.set([tgt.w, tgt.h, 1 / tgt.w, 1 / tgt.h], 96);
-      frame.set([N, lampAngle, 0, reduced ? 0.5 : 1], 100);
+      put4(68, fl.absorb[0], fl.absorb[1], fl.absorb[2], 0);
+      put4(72, fl.scatter[0], fl.scatter[1], fl.scatter[2], 1);
+      fl.strataRgb.forEach((c, i) => put4(76 + i * 4, c[0], c[1], c[2], 1));
+      put4(96, tgt.w, tgt.h, 1 / tgt.w, 1 / tgt.h);
+      put4(100, N, lampAngle, 0, reduced ? 0.5 : 1);
     }
 
     function sampleWater(x, z) { return sim.height(x, z); }
@@ -4338,7 +4365,7 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
       if (hit.kind === 'buoy') {
         const b = life.buoys[hit.i];
         b.state = 'held'; drag.i = hit.i; drag.hist = [];
-        canvas.style.cursor = 'grabbing';
+        setCursor('grabbing');
       } else if (hit.kind === 'water') {
         drag.p = hit.p;
         sim.splash(hit.p[0], hit.p[2], 0.01, 0.05, 0.25);
@@ -4371,10 +4398,7 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
         return;
       }
       if (!drag) {
-        if (e.pointerType === 'mouse') {
-          const hit = pick(e.clientX, e.clientY);
-          canvas.style.cursor = hit.kind === 'water' ? 'crosshair' : hit.kind === 'buoy' ? 'grab' : hit.kind === 'side' ? 'move' : 'default';
-        }
+        if (e.pointerType === 'mouse') { hoverAt = [e.clientX, e.clientY]; }
         return;
       }
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
@@ -4382,7 +4406,7 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
       if (drag.kind === 'orbit' || drag.kind === 'land') {
         cam.yaw -= dx * 0.006; camTouched = true;
         cam.pitch = Math.min(1.4, Math.max(0.1, cam.pitch + dy * 0.005));
-        canvas.style.cursor = 'grabbing';
+        setCursor('grabbing');
       } else if (drag.kind === 'water') {
         const p = planePoint(e.clientX, e.clientY, sim.level);
         if (p && Math.abs(p[0]) < K.HALF && Math.abs(p[2]) < K.HALF) {
@@ -4423,7 +4447,7 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
       if (drag.kind === 'buoy') releaseBuoy();
       if (drag.kind === 'side') { tilt.held = false; jelly.quiver = Math.min(1, jelly.quiver + 0.6); }
       drag = null;
-      canvas.style.cursor = 'default';
+      setCursor('default');
     };
     canvas.addEventListener('pointerup', endPointer);
     canvas.addEventListener('pointercancel', endPointer);
@@ -4524,21 +4548,31 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
     }
 
     let activity = 0;
+    let hoverAt = null;
+    const toneData = new Float32Array(4);
+    const el = { btn: $('#btn-ship'), status: $('#ship-status'), boxes: $('#t-boxes'), voy: $('#t-voy'), fed: $('#t-fed'), meter: $('#meter-fill') };
+    const shown = {};
+    const show = (key, node, value, apply) => { if (shown[key] !== value) { shown[key] = value; apply(node, value); } };
+    const setText = (n, v) => { n.textContent = v; };
+    function setCursor(v) { shown.cursor = v; canvas.style.cursor = v; }
     function updateUI(dt) {
       const b = core.button();
-      const btn = $('#btn-ship');
-      if (btn.textContent !== b.label) btn.textContent = b.label;
-      btn.disabled = !b.enabled;
+      show('label', el.btn, b.label, setText);
+      show('enabled', el.btn, b.enabled, (n, v) => { n.disabled = !v; });
       const st = core.status();
-      const stEl = $('#ship-status');
-      if (stEl.textContent !== st) stEl.textContent = st;
-      $('#t-boxes').textContent = core.S.tally.boxes;
-      $('#t-voy').textContent = core.S.tally.voyages;
-      $('#t-fed').textContent = ui.fed;
+      show('status', el.status, st, setText);
+      show('boxes', el.boxes, core.S.tally.boxes, setText);
+      show('voy', el.voy, core.S.tally.voyages, setText);
+      show('fed', el.fed, ui.fed, setText);
       const motion = core.ship.speed * 2 + core.tug.speed + core.cranes.reduce((a, c) => a + Math.abs(c.vx) + Math.abs(c.vz) * 0.3 + Math.abs(c.vy) * 0.3, 0);
       const target = Math.min(1, Math.sqrt(sim.energy) * 1.6 + motion * 0.5 + jelly.quiver * 0.4);
       activity += (target - activity) * Math.min(1, dt * 3);
-      $('#meter-fill').style.transform = `scaleX(${activity.toFixed(3)})`;
+      show('meter', el.meter, Math.round(activity * 100), (n, v) => { n.style.transform = `scaleX(${v / 100})`; });
+      if (hoverAt && !drag) {
+        const hit = pick(hoverAt[0], hoverAt[1]);
+        show('cursor', canvas, hit.kind === 'water' ? 'crosshair' : hit.kind === 'buoy' ? 'grab' : hit.kind === 'side' ? 'move' : 'default', (n, v) => { n.style.cursor = v; });
+        hoverAt = null;
+      }
       hook.status = st;
       hook.button = b;
     }
@@ -4587,7 +4621,8 @@ fn terrH(xz: vec2f) -> f32 { return gridLoad(terrTex, xz).r; }
       device.queue.writeBuffer(gullIB, 0, instG, 0, nG * 12);
       device.queue.writeBuffer(jellyIB, 0, instJ, 0, nJ * 12);
       if (nP) device.queue.writeBuffer(partIB, 0, instP, 0, nP * 12);
-      device.queue.writeBuffer(toneBuf, 0, new Float32Array([tgt.w, tgt.h, (now % 997), 0]));
+      toneData[0] = tgt.w; toneData[1] = tgt.h; toneData[2] = now % 997;
+      device.queue.writeBuffer(toneBuf, 0, toneData);
 
       const enc = device.createCommandEncoder();
       {

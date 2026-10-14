@@ -4,6 +4,20 @@
   const K = HC.K, L = HC.LAYOUT;
   const { qmul, qaxis, qyaw, qrot, clamp, wrapAngle, mulberry32 } = HC;
 
+  const TR = 384, TS = TR / (2 * K.HALF);
+  let TT = null;
+  function terr(x, z) {
+    if (!TT) {
+      TT = new Float32Array(TR * TR);
+      for (let j = 0; j < TR; j++) for (let i = 0; i < TR; i++) TT[j * TR + i] = HC.terrainH(-K.HALF + (i + 0.5) / TS, -K.HALF + (j + 0.5) / TS);
+    }
+    let gi = (x + K.HALF) * TS - 0.5, gj = (z + K.HALF) * TS - 0.5;
+    gi = gi < 0 ? 0 : gi > TR - 1.001 ? TR - 1.001 : gi;
+    gj = gj < 0 ? 0 : gj > TR - 1.001 ? TR - 1.001 : gj;
+    const i = gi | 0, j = gj | 0, fi = gi - i, fj = gj - j, c = j * TR + i;
+    return (TT[c] * (1 - fi) + TT[c + 1] * fi) * (1 - fj) + (TT[c + TR] * (1 - fi) + TT[c + TR + 1] * fi) * fj;
+  }
+
   class Floater {
     constructor(x, z, psi, half, beam) {
       this.x = x; this.z = z; this.psi = psi; this.half = half; this.beam = beam;
@@ -221,7 +235,7 @@
           if (f.life > 2.5 + (i % 5) * 0.4) f.state = 'sink';
         } else {
           f.y -= dt * 0.035;
-          const H = HC.terrainH(f.x, f.z);
+          const H = terr(f.x, f.z);
           if (f.y < H + 0.005) f.y = H + 0.005;
         }
         if (f.life > 30) food.splice(i, 1);
@@ -248,7 +262,7 @@
 
     function inWater(x, y, z) {
       if (Math.abs(x) > K.HALF - 0.04 || Math.abs(z) > K.HALF - 0.04) return false;
-      return y < sim.level - 0.03 && y > HC.terrainH(x, z) + 0.025;
+      return y < sim.level - 0.03 && y > terr(x, z) + 0.025;
     }
 
     function updateFish(dt, core) {
@@ -263,7 +277,7 @@
           for (let tries = 0; tries < 20; tries++) {
             const x = sc.home[0] + (rnd() - 0.5) * 2.2, z = sc.home[1] + (rnd() - 0.5) * 2.0;
             const y = sc.sp.depth[0] + rnd() * (sc.sp.depth[1] - sc.sp.depth[0]);
-            if (inWater(x, y, z) && HC.terrainH(x, z) < y - 0.08) { sc.target = [x, y, z]; break; }
+            if (inWater(x, y, z) && terr(x, z) < y - 0.08) { sc.target = [x, y, z]; break; }
           }
         }
         const ms = sc.members;
@@ -315,20 +329,21 @@
               ax += -nlz * s * 1.5; az += nlz * c * 1.5;
             }
           }
-          const H = HC.terrainH(f.p[0], f.p[2]);
+          const H = terr(f.p[0], f.p[2]);
           if (f.p[1] < H + 0.06) ay += (H + 0.06 - f.p[1]) * 40;
           if (f.p[1] > sim.level - 0.06) ay -= (f.p[1] - sim.level + 0.06) * 40;
-          for (const [ex, ez] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            const dd = K.HALF - (f.p[0] * ex + f.p[2] * ez);
-            if (dd < 0.15) { ax -= ex * (0.15 - dd) * 30; az -= ez * (0.15 - dd) * 30; }
-          }
-          const ahead = [f.p[0] + f.v[0] * 0.5, f.p[2] + f.v[2] * 0.5];
-          if (HC.terrainH(ahead[0], ahead[1]) > f.p[1] - 0.04 || ahead[1] < K.QUAY_Z + 0.06) {
+          const wl = 0.15 - (K.HALF - f.p[0]), wr = 0.15 - (K.HALF + f.p[0]), wn = 0.15 - (K.HALF - f.p[2]), ws = 0.15 - (K.HALF + f.p[2]);
+          if (wl > 0) ax -= wl * 30;
+          if (wr > 0) ax += wr * 30;
+          if (wn > 0) az -= wn * 30;
+          if (ws > 0) az += ws * 30;
+          const aheadX = f.p[0] + f.v[0] * 0.5, aheadZ = f.p[2] + f.v[2] * 0.5;
+          if (terr(aheadX, aheadZ) > f.p[1] - 0.04 || aheadZ < K.QUAY_Z + 0.06) {
             const e = 0.03;
-            const gx = HC.terrainH(f.p[0] + e, f.p[2]) - HC.terrainH(f.p[0] - e, f.p[2]);
-            const gz = HC.terrainH(f.p[0], f.p[2] + e) - HC.terrainH(f.p[0], f.p[2] - e);
+            const gx = terr(f.p[0] + e, f.p[2]) - terr(f.p[0] - e, f.p[2]);
+            const gz = terr(f.p[0], f.p[2] + e) - terr(f.p[0], f.p[2] - e);
             ax -= gx * 30 + f.v[0] * 2; az -= gz * 30 + f.v[2] * 2;
-            if (ahead[1] < K.QUAY_Z + 0.06) az += 2;
+            if (aheadZ < K.QUAY_Z + 0.06) az += 2;
           }
           f.v[0] += ax * dt; f.v[1] += ay * dt; f.v[2] += az * dt;
           const sp2 = Math.hypot(f.v[0], f.v[1], f.v[2]);
@@ -337,7 +352,7 @@
           const k = sp2 > vmax ? vmax / sp2 : (sp2 < vmin ? vmin / (sp2 + 1e-6) : 1);
           f.v[0] *= k; f.v[1] *= k * 0.6; f.v[2] *= k;
           f.p[0] += f.v[0] * dt; f.p[1] += f.v[1] * dt; f.p[2] += f.v[2] * dt;
-          const Hn = HC.terrainH(f.p[0], f.p[2]);
+          const Hn = terr(f.p[0], f.p[2]);
           if (Hn > sim.level - 0.06 || f.p[2] < K.QUAY_Z + 0.03) { f.p[0] -= f.v[0] * dt * 2; f.p[2] -= f.v[2] * dt * 2; f.v[0] *= -0.5; f.v[2] *= -0.5; }
           f.p[1] = clamp(f.p[1], Math.max(Hn, -0.6) + 0.025, sim.level - 0.035);
           f.p[0] = clamp(f.p[0], -K.HALF + 0.04, K.HALF - 0.04); f.p[2] = clamp(f.p[2], -K.HALF + 0.04, K.HALF - 0.04);
@@ -357,7 +372,7 @@
     const jellies = [];
     for (let i = 0; i < 6; i++) {
       let x, z;
-      do { x = -2.2 + rnd() * 4.2; z = -0.3 + rnd() * 2.6; } while (HC.terrainH(x, z) > -0.4);
+      do { x = -2.2 + rnd() * 4.2; z = -0.3 + rnd() * 2.6; } while (terr(x, z) > -0.4);
       jellies.push({ p: [x, -0.15 - rnd() * 0.25, z], ph: rnd() * 6, rate: 1.8 + rnd() * 0.8, vy: 0, yaw: rnd() * 6, tilt: 0, size: 0.045 + rnd() * 0.02, seed: rnd() * 10 });
     }
     function updateJellies(dt, core) {
@@ -369,7 +384,7 @@
         j.p[0] += (vu * 0.6 + Math.sin(Life.t * 0.07 + j.seed) * 0.01) * dt;
         j.p[2] += (vv * 0.6 + Math.cos(Life.t * 0.05 + j.seed) * 0.01) * dt;
         j.p[1] += j.vy * dt;
-        const H = HC.terrainH(j.p[0], j.p[2]);
+        const H = terr(j.p[0], j.p[2]);
         const bottom = H + 0.12;
         if (j.p[1] < bottom) { j.p[1] = bottom; j.vy = Math.abs(j.vy); }
         if (j.p[1] > sim.level - 0.06) { j.p[1] = sim.level - 0.06; j.vy = -Math.abs(j.vy) * 0.5; }
