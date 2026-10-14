@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>Harbor Jelly</title>
+<!--@style-->
+</head>
+<body>
+<canvas id="gpu" aria-label="Harbor Jelly: a container harbour inside a block of jelly sea"></canvas>
+
+<header class="masthead">
+  <p class="eyebrow">Material Studies</p>
+  <h1>Harbor Jelly.</h1>
+  <p class="lede">A small working harbour, set in a block of wobbly sea.</p>
+</header>
+
+<div id="pill" class="pill" role="status"><span class="dot" aria-hidden="true"></span><span id="pill-text">WebGPU · Starting</span></div>
+
+<aside id="panel" class="panel" aria-label="Controls">
+  <button id="sheet-toggle" class="sheet-toggle" type="button" aria-label="Show or hide controls"><span></span></button>
+  <div class="panel-body">
+    <section class="block ship">
+      <div class="row between">
+        <h2>The ship</h2>
+        <div class="meter" title="Activity" aria-hidden="true"><div id="meter-fill"></div></div>
+      </div>
+      <p id="ship-status" class="status" aria-live="polite">Unloading 1 / 8</p>
+      <div class="actions">
+        <button id="btn-ship" class="btn primary" type="button">Cast off</button>
+        <button id="btn-horn" class="btn" type="button" title="Horn (Space)">Horn</button>
+        <button id="btn-feed" class="btn" type="button">Feed the fish</button>
+      </div>
+      <dl class="tally">
+        <div><dt>Boxes moved</dt><dd id="t-boxes">0</dd></div>
+        <div><dt>Voyages</dt><dd id="t-voy">0</dd></div>
+        <div><dt>Fed</dt><dd id="t-fed">0</dd></div>
+      </dl>
+    </section>
+
+    <section class="block">
+      <h2>Flavour</h2>
+      <div class="swatches" role="group" aria-label="Flavour">
+        <button class="swatch" type="button" data-flavour="seaglass" aria-pressed="true"><i style="--a:#bfe9d8;--b:#2f9c8c"></i>Sea glass</button>
+        <button class="swatch" type="button" data-flavour="blueberry" aria-pressed="false"><i style="--a:#a9bff0;--b:#2a3f94"></i>Blueberry</button>
+        <button class="swatch" type="button" data-flavour="lime" aria-pressed="false"><i style="--a:#e6f59a;--b:#7fae1e"></i>Lime</button>
+      </div>
+    </section>
+
+    <section class="block sliders">
+      <label><span>Firmness <output id="firmness-v"></output></span><input id="firmness" type="range" min="0" max="1" step="0.01" value="0.5"></label>
+      <label><span>Wave damping <output id="damping-v"></output></span><input id="damping" type="range" min="0" max="1" step="0.01" value="0.35"></label>
+      <label><span>Tide <output id="tide-v"></output></span><input id="tide" type="range" min="-10" max="10" step="1" value="0"></label>
+    </section>
+
+    <section class="block utils">
+      <button id="btn-reset" class="btn small" type="button">Reset</button>
+      <button id="btn-pause" class="btn small" type="button" aria-pressed="false">Pause</button>
+      <button id="btn-sound" class="btn small" type="button" aria-pressed="true">Sound on</button>
+      <button id="btn-view" class="btn small" type="button">Reset view</button>
+    </section>
+  </div>
+</aside>
+
+<p class="howto"><b>How to play</b> Drag the water to make waves · drag the block’s side to tip it · pick up a lifebuoy and throw it · drag empty space to orbit, scroll to zoom.</p>
+
+<div id="fallback" class="fallback" role="alert">
+  <div class="card">
+    <p class="eyebrow">Material Studies</p>
+    <h2>The jelly needs WebGPU.</h2>
+    <p>This study renders a live harbour with WebGPU, and this browser couldn’t start it.</p>
+    <p class="reason" id="fallback-reason"></p>
+    <p class="hint">Try a recent Chrome, Edge or Safari, with hardware acceleration turned on.</p>
+  </div>
+</div>
+
+<!--@core-->
+<!--@scripts-->
+</body>
+</html>

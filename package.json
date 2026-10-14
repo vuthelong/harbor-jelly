@@ -1,0 +1,15 @@
+{
+  "name": "harbor-jelly",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Material Studies: Harbor Jelly, a WebGPU container harbour inside a block of jelly sea.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/choreography.test.mjs",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1"
+  }
+}
