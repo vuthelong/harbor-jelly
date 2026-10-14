@@ -481,9 +481,14 @@
     }
 
     const put4 = (o, a, b, c, d) => { frame[o] = a; frame[o + 1] = b; frame[o + 2] = c; frame[o + 3] = d; };
-    const BG = hexToRgb('#efe8db').map(c => Math.pow(c, 2.2));
+    const BG = [0, 0, 0];
+    const syncBG = () => {
+      const dark = document.documentElement.dataset.dark === '1';
+      BG[0] = dark ? 0.0017 : 0.955; BG[1] = dark ? 0.0017 : 0.955; BG[2] = dark ? 0.0023 : 0.974;
+    };
     for (const fl of Object.values(FLAVOURS)) fl.strataRgb = fl.strata.map(hexToRgb);
     function writeFrame(time) {
+      syncBG();
       frame.set(viewProj, 0);
       frame.set(lightVP, 16);
       put4(32, view[0], view[4], view[8], 0);
@@ -861,7 +866,7 @@
         const p = enc.beginRenderPass({ colorAttachments: [{ view: causTex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [1, 0, 0, 1] }] });
         p.setPipeline(pCaus); p.setBindGroup(0, bg0); p.setBindGroup(1, bgC); p.draw(3); p.end();
       }
-      const bgc = [0.86, 0.81, 0.73];
+      const bgc = BG;
       {
         const p = enc.beginRenderPass({
           colorAttachments: [
